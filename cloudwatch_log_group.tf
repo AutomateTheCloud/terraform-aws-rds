@@ -1,15 +1,22 @@
-resource "aws_cloudwatch_log_group" "this" {
-  count             = try(length(var.cloudwatch.exports), 0)
-  name              = "/aws/rds/instance/${var.identifier}/${var.cloudwatch.exports[count.index]}"
-  retention_in_days = try(var.cloudwatch.retention, 7)
-  tags              = local.tags
-  provider          = aws.this
-}
+# Copyright 2025 Automate the Cloud Inc.
+# SPDX-License-Identifier: Apache-2.0
 
-resource "aws_cloudwatch_log_group" "replica" {
-  count             = try(length(local.replica_cloudwatch_groups), 0)
-  name              = "/aws/rds/instance/${local.replica_cloudwatch_groups[count.index].identifier}/${local.replica_cloudwatch_groups[count.index].cloudwatch_group}"
-  retention_in_days = try(var.cloudwatch.retention, 7)
-  tags              = local.tags
-  provider          = aws.this
+# The log groups RDS publishes to. They are created before the instances (see
+# depends_on in db_instance.tf): if RDS wrote first, it would create them itself, with
+# no retention, and this create would fail because they exist. A rename replaces them;
+# the old ones are deleted only after the instance has its new name, or RDS would
+# create them again (seen in AWS).
+resource "aws_cloudwatch_log_group" "this" {
+  for_each = local.cloudwatch_log_groups
+
+  region            = var.region
+  name              = each.value
+  retention_in_days = var.cloudwatch_logs.retention_in_days
+  kms_key_id        = var.cloudwatch_logs.kms_key_id
+
+  tags = local.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }

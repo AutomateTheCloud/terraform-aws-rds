@@ -1,29 +1,46 @@
+# Copyright 2025 Automate the Cloud Inc.
+# SPDX-License-Identifier: Apache-2.0
+
 locals {
-  database_master_password = try(var.credentials.master.password, null) != null ? var.credentials.master.password : random_password.master_password.result
+  # The Name tag of the security group, and the start of its name.
+  name = "rds-${var.identifier}"
 
-  kms_key_id = try(var.encryption.enabled, true) ? try(var.encryption.kms_key_id, "alias/aws/rds") : null
-  port       = try(var.port, null) != null ? var.port : local.port_default_lookup["${var.engine}"]
+  # A group description may contain only these characters, so anything else in the
+  # details names is dropped rather than failing the create.
+  security_group_description = substr(replace(
+    "${local.scope.name} - ${local.purpose.name} [${local.environment.name}] (${local.aws.region.name}): RDS ${var.identifier}",
+    "/[^A-Za-z0-9 ._:/()#,@\\[\\]+=&;{}!$*-]/", ""
+  ), 0, 255)
 
-  port_default_lookup = {
-    mariadb        = "3306"
-    mysql          = "3306"
-    oracle-ee      = "1521"
-    oracle-ee-cdb  = "1521"
-    oracle-se2     = "1521"
-    oracle-se2-cdb = "1521"
-    postgres       = "5432"
-    sqlserver-ee   = "1433"
-    sqlserver-se   = "1433"
-    sqlserver-ex   = "1433"
-    sqlserver-web  = "1433"
-  }
+  # The port the instance listens on: var.port, or the engine's default. Known from the
+  # inputs, so the ingress rules can be created with a new security group before the
+  # instance moves to it. The engine is validated, so every family is in the map.
+  port = coalesce(var.port, {
+    postgres  = 5432
+    mysql     = 3306
+    mariadb   = 3306
+    oracle    = 1521
+    sqlserver = 1433
+    db2       = 50000
+  }[split("-", var.engine)[0]])
 
-  replica_cloudwatch_groups = flatten([
-    for j in range(1, try(var.replica.count, 0) + 1) : [
-      for i in try(var.cloudwatch.exports, []) : {
-        identifier       = "${var.identifier}-replica-${j}",
-        cloudwatch_group = i
-      }
-    ]
-  ])
+  # IAM authentication is on by default for the engines that support it.
+  iam_database_authentication_enabled = coalesce(var.iam_database_authentication_enabled, contains(["postgres", "mysql", "mariadb"], var.engine))
+
+  # RDS keeps the master password in Secrets Manager, unless there are read replicas on
+  # an engine for which AWS refuses that (see secretsmanager_secret.tf).
+  manage_master_user_password = var.read_replicas.count == 0 || startswith(var.engine, "sqlserver") || startswith(var.engine, "db2")
+
+  # 20 GiB unless restoring, when the snapshot's size is kept.
+  allocated_storage = var.storage.allocated != null ? var.storage.allocated : (var.snapshot_identifier == null ? 20 : null)
+
+  replica_identifiers = [for n in range(1, var.read_replicas.count + 1) : "${var.identifier}-replica-${n}"]
+
+  # One log group per instance and log type, keyed "<identifier>/<log type>". Built from
+  # the inputs alone, so adding a log type or a replica never moves another group.
+  cloudwatch_log_groups = merge([
+    for id in concat([var.identifier], local.replica_identifiers) : {
+      for log_type in var.cloudwatch_logs.exports : "${id}/${log_type}" => "/aws/rds/instance/${id}/${log_type}"
+    }
+  ]...)
 }
