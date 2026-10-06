@@ -1,4 +1,4 @@
-# Copyright 2025 Automate the Cloud Inc.
+# Copyright 2026 Automate the Cloud Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 # Offline tests: every provider is mocked, so no AWS account is used.
@@ -128,5 +128,31 @@ run "adding_a_log_type_keeps_the_others" {
   assert {
     condition     = toset(keys(aws_cloudwatch_log_group.this)) == toset(["app/postgresql", "app/upgrade", "app-replica-1/postgresql", "app-replica-1/upgrade"])
     error_message = "Log groups must be keyed by instance and log type."
+  }
+}
+
+# The final snapshot's suffix changed only with the identifier, so a change that
+# replaces the instance, such as db_name, kept it: the replaced instance's final
+# snapshot took the name, and deleting the new instance would fail on it.
+run "final_snapshot_suffix_follows_replacing_inputs" {
+  command = plan
+  variables {
+    db_name    = "orders"
+    kms_key_id = "arn:aws:kms:us-east-1:111111111111:key/0000"
+  }
+  assert {
+    condition = alltrue([
+      random_id.final_snapshot.keepers["identifier"] == "app",
+      random_id.final_snapshot.keepers["engine"] == "postgres",
+      random_id.final_snapshot.keepers["db_name"] == "orders",
+      random_id.final_snapshot.keepers["kms_key_id"] == "arn:aws:kms:us-east-1:111111111111:key/0000",
+    ])
+    error_message = "Every input that replaces the instance must change the final snapshot's suffix."
+  }
+  # Inputs that ignore_changes keeps from replacing the instance must not change it: an
+  # in-place change of only final_snapshot_identifier is an update with nothing to send.
+  assert {
+    condition     = !contains(keys(random_id.final_snapshot.keepers), "username") && !contains(keys(random_id.final_snapshot.keepers), "snapshot_identifier")
+    error_message = "Inputs that do not replace the instance must not change the final snapshot's suffix."
   }
 }
